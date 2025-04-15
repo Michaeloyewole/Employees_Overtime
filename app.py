@@ -1,39 +1,42 @@
 import streamlit as st  
 import pandas as pd  
+import plotly.express as px  
 from datetime import datetime  
-from modules.database import Database  
-from modules.visualization import Visualization  
+import os  
   
-# Initialize database  
-db = Database()  
-viz = Visualization()  
-  
-# Page configuration  
+# Page config  
 st.set_page_config(  
     page_title="Employee Overtime Management",  
-    page_icon="⏰",  
-    layout="wide"  
+    layout="wide",  
+    initial_sidebar_state="expanded"  
 )  
   
-# Custom CSS  
-st.markdown("""  
-    <style>  
-    .main {  
-        padding: 20px;  
-    }  
-    .stButton>button {  
-        width: 100%;  
-    }  
-    .reportview-container {  
-        margin: 0;  
-    }  
-    </style>  
-""", unsafe_allow_html=True)  
+# Initialize session state  
+if 'data' not in st.session_state:  
+    st.session_state.data = pd.DataFrame(  
+        columns=[  
+            "Date", "ID", "Name", "Designation", "Status",  
+            "Scheduling_OT", "OCC_OT", "Training_OT", "OPS_OT",  
+            "Approved_By", "Total_OT"  
+        ]  
+    )  
   
-def overtime_form(dept):  
-    st.subheader(f"{dept} Overtime Entry")  
+# Data management functions  
+def save_data():  
+    st.session_state.data.to_csv('overtime_data.csv', index=False)  
+  
+def load_data():  
+    if os.path.exists('overtime_data.csv'):  
+        st.session_state.data = pd.read_csv('overtime_data.csv')  
+        st.session_state.data['Date'] = pd.to_datetime(st.session_state.data['Date'])  
+  
+# Load existing data  
+load_data()  
+  
+def overtime_entry_form(department):  
+    st.header(f"{department} Overtime Entry")  
       
-    with st.form(key=f"{dept}_form"):  
+    with st.form(f"{department}_form"):  
         col1, col2 = st.columns(2)  
           
         with col1:  
@@ -43,87 +46,103 @@ def overtime_form(dept):
               
         with col2:  
             designation = st.text_input("Designation")  
-            status = st.selectbox("Status", ["Active", "On Leave", "Training"])  
+            status = st.selectbox("Status", ["Active", "Inactive"])  
             ot_hours = st.number_input("Overtime Hours", min_value=0.0, step=0.5)  
               
         approved_by = st.text_input("Approved By")  
           
-        submit = st.form_submit_button("Submit Entry")  
-          
-        if submit:  
-            if not all([emp_id, name, designation, approved_by]):  
-                st.error("Please fill all required fields")  
-                return  
-                  
-            entry_data = {  
+        if st.form_submit_button("Submit"):  
+            new_entry = {  
                 "Date": date,  
                 "ID": emp_id,  
                 "Name": name,  
                 "Designation": designation,  
                 "Status": status,  
-                "Scheduling_OT": ot_hours if dept == "Scheduling" else 0,  
-                "OCC_OT": ot_hours if dept == "OCC" else 0,  
-                "Training_OT": ot_hours if dept == "Training" else 0,  
-                "OPS_OT": ot_hours if dept == "Operations" else 0,  
+                "Scheduling_OT": ot_hours if department == "Scheduling" else 0,  
+                "OCC_OT": ot_hours if department == "OCC" else 0,  
+                "Training_OT": ot_hours if department == "Training" else 0,  
+                "OPS_OT": ot_hours if department == "Operations" else 0,  
                 "Approved_By": approved_by,  
                 "Total_OT": ot_hours  
             }  
               
-            if db.add_entry(entry_data):  
-                st.success(f"Overtime entry added for {name}")  
-            else:  
-                st.error("Error adding entry")  
+            st.session_state.data = pd.concat([  
+                st.session_state.data,  
+                pd.DataFrame([new_entry])  
+            ], ignore_index=True)  
+              
+            save_data()  
+            st.success("Overtime entry added successfully!")  
   
-def show_report():  
-    st.subheader("Overtime Analysis Dashboard")  
+def show_dashboard():  
+    st.header("Overtime Dashboard")  
       
-    df = db.load_data()  
-    if df.empty:  
-        st.info("No data available yet.")  
+    if st.session_state.data.empty:  
+        st.info("No overtime data available yet.")  
         return  
-          
+      
     # Summary metrics  
     col1, col2, col3, col4 = st.columns(4)  
+      
     with col1:  
-        st.metric("Total Employees", len(df["ID"].unique()))  
+        st.metric("Total Scheduling OT",   
+                 f"{st.session_state.data['Scheduling_OT'].sum():.2f} hrs")  
     with col2:  
-        st.metric("Total OT Hours", f"{df['Total_OT'].sum():.1f}")  
+        st.metric("Total OCC OT",   
+                 f"{st.session_state.data['OCC_OT'].sum():.2f} hrs")  
     with col3:  
-        st.metric("Avg. OT/Employee", f"{df.groupby('ID')['Total_OT'].sum().mean():.1f}")  
+        st.metric("Total Training OT",   
+                 f"{st.session_state.data['Training_OT'].sum():.2f} hrs")  
     with col4:  
-        st.metric("Active Departments", len([col for col in df.columns if col.endswith("_OT")]))  
+        st.metric("Total OPS OT",   
+                 f"{st.session_state.data['OPS_OT'].sum():.2f} hrs")  
+  
+    # Visualization  
+    st.subheader("Overtime Distribution by Department")  
+    df_melt = st.session_state.data.melt(  
+        id_vars=['Name'],  
+        value_vars=['Scheduling_OT', 'OCC_OT', 'Training_OT', 'OPS_OT'],  
+        var_name='Department',  
+        value_name='Hours'  
+    )  
       
-    # Charts  
-    st.plotly_chart(viz.create_department_chart(df), use_container_width=True)  
-    st.plotly_chart(viz.create_trend_chart(df), use_container_width=True)  
-      
-    # Detailed table  
-    st.subheader("Detailed Overtime Records")  
+    fig = px.bar(  
+        df_melt,  
+        x='Name',  
+        y='Hours',  
+        color='Department',  
+        title='Overtime Hours by Employee and Department',  
+        barmode='group'  
+    )  
+    st.plotly_chart(fig, use_container_width=True)  
+  
+    # Detailed data view  
+    st.subheader("Detailed Records")  
     st.dataframe(  
-        df.sort_values("Date", ascending=False),  
+        st.session_state.data.sort_values('Date', ascending=False),  
         use_container_width=True  
     )  
   
-# Main App  
-st.title("Employee Overtime Management System")  
-  
 # Sidebar navigation  
-menu = st.sidebar.radio(  
-    "Navigation",  
-    ["Scheduling Overtime", "OCC Overtime",   
-     "Training Overtime", "Operations Overtime",   
-     "Overtime Dashboard"]  
+st.sidebar.title("Navigation")  
+page = st.sidebar.radio(  
+    "Select Module",  
+    ["Scheduling Overtime", "OCC Overtime", "Training Overtime",   
+     "Operations Overtime", "Dashboard"]  
 )  
   
-# Route to appropriate page  
-if menu == "Scheduling Overtime":  
-    overtime_form("Scheduling")  
-elif menu == "OCC Overtime":  
-    overtime_form("OCC")  
-elif menu == "Training Overtime":  
-    overtime_form("Training")  
-elif menu == "Operations Overtime":  
-    overtime_form("Operations")  
-elif menu == "Overtime Dashboard":  
-    show_report()  
+# Main content  
+if page == "Dashboard":  
+    show_dashboard()  
+elif page == "Scheduling Overtime":  
+    overtime_entry_form("Scheduling")  
+elif page == "OCC Overtime":  
+    overtime_entry_form("OCC")  
+elif page == "Training Overtime":  
+    overtime_entry_form("Training")  
+elif page == "Operations Overtime":  
+    overtime_entry_form("Operations")  
   
+# Footer  
+st.sidebar.markdown("---")  
+st.sidebar.markdown("© 2023 Employee Overtime Management")  
